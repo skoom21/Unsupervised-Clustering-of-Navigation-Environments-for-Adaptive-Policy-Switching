@@ -1,0 +1,52 @@
+from pathlib import Path
+import numpy as np
+
+np.random.seed(42)
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+OUTPUTS_DIR = BASE_DIR / "outputs"
+FIGURES_DIR = OUTPUTS_DIR / "figures"
+MODELS_DIR = OUTPUTS_DIR / "models"
+REPORTS_DIR = OUTPUTS_DIR / "reports"
+DATASET_DIR = BASE_DIR / "dataset"
+
+N_CLUSTERS = 4
+BEST_K = 2
+DOWNSTREAM_CLUSTER_K = 4
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+PCA_COMPONENTS = 10
+K_NEIGHBORS = 5
+Q_LEARNING_EPISODES = 1000
+LEARNING_RATE = 0.1
+DISCOUNT_FACTOR = 0.95
+EPSILON = 1.0
+EPSILON_DECAY = 0.995
+EPSILON_MIN = 0.01
+RL_LOG_EVERY = 25
+RL_STEP_LOG_INTERVAL = 50000
+RL_EARLY_STOP_WINDOW = 50
+RL_EARLY_STOP_PATIENCE = 5
+RL_EARLY_STOP_MIN_DELTA = 1.0
+BFS_SAMPLES = 50
+DIFFICULTY_LOW_PERCENTILE = 0.33
+DIFFICULTY_HIGH_PERCENTILE = 0.67
+DENSITY_LOW_THRESHOLD = 0.20
+DENSITY_HIGH_THRESHOLD = 0.35
+
+MAP_TYPE_CLASSES = ["maze", "room", "random", "street"]
+STREET_CITIES = [
+    "Berlin",
+    "Boston",
+    "Denver",
+    "London",
+    "Milan",
+    "Moscow",
+    "NewYork",
+    "Paris",
+    "Shanghai",
+    "Sydney",
+]
