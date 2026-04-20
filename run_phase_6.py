@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 import config
 from src.preprocessing import prepare_numeric_features, handle_missing_values
 from src.regression import train_regression_models, evaluate_regression
-from src.rl_agent import GridEnvironment, QAgent, train_cluster_agents
+from src.rl_agent import GridEnvironment, QAgent, downsample_grid, train_cluster_agents
 from src.data_loader import parse_map_file
 
 np.random.seed(42)
@@ -127,10 +127,9 @@ def _compute_steps_to_goal(
             )
             continue
 
-        if grid.shape[0] >= 1024 or grid.shape[1] >= 1024:
-            grid = grid[::4, ::4]
+        grid = downsample_grid(grid, getattr(config, "RL_MAX_GRID_DIM", None))
 
-        env = GridEnvironment(grid)
+        env = GridEnvironment(grid, max_steps=config.RL_MAX_STEPS)
         agent = agent_info["agent"]
         avg_steps, success_rate = _run_greedy_episodes(env, agent, n_episodes)
 
@@ -284,7 +283,7 @@ def run_phase_6() -> None:
         cluster_labels,
         cluster_agents,
         config.RAW_DATA_DIR,
-        n_episodes=50,
+        n_episodes=100,
     )
     _save_steps_to_goal(df_steps)
 

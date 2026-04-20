@@ -14,37 +14,82 @@ np.random.seed(42)
 
 
 class GridEnvironment:
-    def __init__(self, grid: np.ndarray, max_steps: int | None = None):
+    def __init__(
+        self,
+        grid: np.ndarray,
+        max_steps: int | None = None,
+        start_near_goal_prob: float = 0.0,
+        near_goal_radius: int = 5,
+    ):
         self.grid = grid
         self.H, self.W = grid.shape
-        self.max_steps = max_steps or (self.H * self.W * 2)
+        default_max = self.H * self.W * 2
+        if max_steps is None:
+            self.max_steps = default_max
+        else:
+            self.max_steps = min(int(max_steps), default_max)
+        self.start_near_goal_prob = max(0.0, min(1.0, float(start_near_goal_prob)))
+        self.near_goal_radius = max(1, int(near_goal_radius))
         self.free_cells = [(r, c) for r in range(self.H) for c in range(self.W) if grid[r, c] == 0]
         self.agent_pos = None
         self.goal = None
         self.steps = 0
 
+    @staticmethod
+    def _manhattan(a: tuple, b: tuple) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _sample_non_goal(self, goal_idx: int) -> tuple:
+        if len(self.free_cells) == 2:
+            return self.free_cells[1 - goal_idx]
+        start_idx = int(np.random.randint(len(self.free_cells) - 1))
+        if start_idx >= goal_idx:
+            start_idx += 1
+        return self.free_cells[start_idx]
+
     def reset(self) -> tuple:
         if len(self.free_cells) < 2:
             raise ValueError("Not enough free cells to sample start/goal")
-        positions = np.random.choice(len(self.free_cells), size=2, replace=False)
-        self.agent_pos = self.free_cells[positions[0]]
-        self.goal = self.free_cells[positions[1]]
+        goal_idx = int(np.random.randint(len(self.free_cells)))
+        self.goal = self.free_cells[goal_idx]
+
+        if np.random.rand() < self.start_near_goal_prob:
+            radius = self.near_goal_radius
+            near_cells = [
+                cell
+                for cell in self.free_cells
+                if cell != self.goal and self._manhattan(cell, self.goal) <= radius
+            ]
+            if near_cells:
+                self.agent_pos = near_cells[int(np.random.randint(len(near_cells)))]
+            else:
+                self.agent_pos = self._sample_non_goal(goal_idx)
+        else:
+            self.agent_pos = self._sample_non_goal(goal_idx)
         self.steps = 0
         return self.agent_pos
 
     def step(self, action: int) -> tuple:
+        prev_distance = self._manhattan(self.agent_pos, self.goal)
         dr, dc = [(-1, 0), (1, 0), (0, -1), (0, 1)][action]
         r, c = self.agent_pos
         nr, nc = r + dr, c + dc
         self.steps += 1
+        moved = False
         if 0 <= nr < self.H and 0 <= nc < self.W and self.grid[nr, nc] == 0:
             self.agent_pos = (nr, nc)
-            reward = -1
+            reward = config.RL_REWARD_STEP
+            moved = True
         else:
-            reward = -5
+            reward = config.RL_REWARD_INVALID
+        new_distance = self._manhattan(self.agent_pos, self.goal)
+        if moved:
+            reward += config.RL_REWARD_DISTANCE_SCALE * (prev_distance - new_distance)
         done = (self.agent_pos == self.goal) or (self.steps >= self.max_steps)
         if self.agent_pos == self.goal:
-            reward = 10
+            reward = config.RL_REWARD_GOAL
+        elif self.steps >= self.max_steps:
+            reward += config.RL_REWARD_TIMEOUT
         return self.agent_pos, reward, done
 
 
@@ -98,7 +143,28 @@ def train_agent(
     best_avg = float("-inf")
     no_improve = 0
 
+    p1 = float(getattr(config, "RL_CURRICULUM_P1", 0.0))
+    p2 = float(getattr(config, "RL_CURRICULUM_P2", 0.0))
+    prob_early = float(getattr(config, "RL_CURRICULUM_PROB_EARLY", 0.0))
+    prob_mid = float(getattr(config, "RL_CURRICULUM_PROB_MID", 0.0))
+    prob_late = float(getattr(config, "RL_CURRICULUM_PROB_LATE", 0.0))
+    p1 = max(0.0, min(1.0, p1))
+    p2 = max(0.0, min(1.0, p2))
+    if p2 < p1:
+        p1, p2 = p2, p1
+
     for episode in range(n_episodes):
+        if n_episodes > 1:
+            progress = episode / float(n_episodes - 1)
+        else:
+            progress = 1.0
+
+        if progress < p1:
+            env.start_near_goal_prob = prob_early
+        elif progress < p2:
+            env.start_near_goal_prob = prob_mid
+        else:
+            env.start_near_goal_prob = prob_late
         try:
             state = env.reset()
         except ValueError as exc:
@@ -154,7 +220,9 @@ def train_agent(
 
 def evaluate_agent(env: GridEnvironment, agent: QAgent, n_eval: int = 100) -> Dict[str, float]:
     original_epsilon = agent.epsilon
+    original_start_prob = getattr(env, "start_near_goal_prob", 0.0)
     agent.epsilon = 0.0
+    env.start_near_goal_prob = 0.0
 
     rewards = []
     steps = []
@@ -175,6 +243,7 @@ def evaluate_agent(env: GridEnvironment, agent: QAgent, n_eval: int = 100) -> Di
         print(f"[WARNING] Evaluation skipped: {exc}")
     finally:
         agent.epsilon = original_epsilon
+        env.start_near_goal_prob = original_start_prob
 
     if not rewards:
         return {
@@ -232,19 +301,45 @@ def select_representative_map(
     if not np.any(mask):
         raise ValueError(f"No maps found for cluster {cluster_id}")
 
+    cluster_indices = np.where(mask)[0]
     cluster_points = X_pca[mask]
-    centroid = cluster_points.mean(axis=0)
-    distances = np.linalg.norm(cluster_points - centroid, axis=1)
+    cluster_df = df_labeled.iloc[cluster_indices].reset_index(drop=True)
+    candidate_mask = np.ones(len(cluster_df), dtype=bool)
+
+    if "height" in cluster_df.columns and "width" in cluster_df.columns:
+        max_dim = getattr(config, "RL_MAX_TRAIN_MAP_DIM", None)
+        if max_dim:
+            candidate_mask = (cluster_df["height"] <= max_dim) & (cluster_df["width"] <= max_dim)
+            if not candidate_mask.any():
+                candidate_mask = np.ones(len(cluster_df), dtype=bool)
+
+    candidate_points = cluster_points[candidate_mask]
+    centroid = candidate_points.mean(axis=0)
+    distances = np.linalg.norm(candidate_points - centroid, axis=1)
     sorted_idx = np.argsort(distances)
 
-    cluster_df = df_labeled.loc[mask].reset_index(drop=True)
-    top_n = min(3, len(cluster_df))
-    candidates = cluster_df.iloc[sorted_idx[:top_n]]
+    candidate_df = cluster_df[candidate_mask].reset_index(drop=True)
+    top_n = min(3, len(candidate_df))
+    candidates = candidate_df.iloc[sorted_idx[:top_n]]
     if "free_ratio" not in candidates.columns:
         return str(candidates.iloc[0]["map_name"])
 
     chosen = candidates.sort_values("free_ratio", ascending=False).iloc[0]
     return str(chosen["map_name"])
+
+
+def downsample_grid(grid: np.ndarray, max_dim: int | None) -> np.ndarray:
+    if max_dim is None:
+        return grid
+    max_dim = int(max_dim)
+    if max_dim <= 0:
+        return grid
+    h, w = grid.shape
+    if h <= max_dim and w <= max_dim:
+        return grid
+    stride = int(np.ceil(max(h, w) / max_dim))
+    stride = max(1, stride)
+    return grid[::stride, ::stride]
 
 
 def _index_map_paths(data_dir: Path) -> Dict[str, Path]:
@@ -274,7 +369,14 @@ def _train_cluster_worker(task: Dict[str, object]) -> Dict[str, object]:
     if grid is None:
         return {"cluster_id": cluster_id, "status": "failed", "map_name": map_name}
 
-    env = GridEnvironment(grid)
+    grid = downsample_grid(grid, getattr(config, "RL_MAX_GRID_DIM", None))
+
+    env = GridEnvironment(
+        grid,
+        max_steps=config.RL_MAX_STEPS,
+        start_near_goal_prob=config.RL_START_NEAR_GOAL_PROB,
+        near_goal_radius=config.RL_NEAR_GOAL_RADIUS,
+    )
     if len(env.free_cells) < 2:
         return {"cluster_id": cluster_id, "status": "skipped", "map_name": map_name}
 
