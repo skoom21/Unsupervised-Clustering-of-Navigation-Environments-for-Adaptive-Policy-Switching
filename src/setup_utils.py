@@ -1,4 +1,7 @@
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 import shutil
 import zipfile
 
@@ -32,9 +35,9 @@ def _count_maps(path: Path) -> int:
 
 def extract_all_zips(zip_dir: Path, output_dir: Path) -> None:
     """Extract zip archives or copy pre-extracted folders into data/raw."""
-    print("=== PHASE 0: Extracting map archives ===")
+    logger.info("=== PHASE 0: Extracting map archives ===")
     if not zip_dir.exists():
-        print(f"[WARNING] Zip directory does not exist: {zip_dir}")
+        logger.warning(f"Zip directory does not exist: {zip_dir}")
         return
 
     for map_type, zip_name in ZIP_MAP.items():
@@ -47,29 +50,29 @@ def extract_all_zips(zip_dir: Path, output_dir: Path) -> None:
             if zip_path.exists():
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(dest_dir)
-                print(f"[OK] Extracted {zip_name} -> {dest_dir}")
+                logger.info(f"Extracted {zip_name} -> {dest_dir}")
             elif src_dir.exists():
                 map_files = list(src_dir.rglob("*.map"))
                 if map_files:
                     for map_file in map_files:
                         shutil.copy2(map_file, dest_dir / map_file.name)
-                    print(f"[OK] Copied {len(map_files)} maps from {src_dir} -> {dest_dir}")
+                    logger.info(f"Copied {len(map_files)} maps from {src_dir} -> {dest_dir}")
                 else:
-                    print(f"[WARNING] No .map files in {src_dir}")
+                    logger.warning(f"No .map files in {src_dir}")
             else:
-                print(f"[WARNING] Missing archive or folder for {map_type}")
+                logger.warning(f"Missing archive or folder for {map_type}")
         except (OSError, zipfile.BadZipFile) as exc:
-            print(f"[ERROR] Failed processing {map_type}: {exc}")
+            logger.error(f"Failed processing {map_type}: {exc}")
 
         count = _count_maps(dest_dir)
         expected = EXPECTED_COUNTS[map_type]
         if count != expected:
-            print(f"[WARNING] {map_type} count {count} (expected {expected})")
+            logger.warning(f"{map_type} count {count} (expected {expected})")
         else:
-            print(f"[OK] {map_type} count {count}")
+            logger.info(f"{map_type} count {count}")
 
     total = _count_maps(output_dir)
     if total != sum(EXPECTED_COUNTS.values()):
-        print(f"[WARNING] Total maps {total} (expected {sum(EXPECTED_COUNTS.values())})")
+        logger.warning(f"Total maps {total} (expected {sum(EXPECTED_COUNTS.values())})")
     else:
-        print(f"[OK] Total maps {total}")
+        logger.info(f"Total maps {total}")

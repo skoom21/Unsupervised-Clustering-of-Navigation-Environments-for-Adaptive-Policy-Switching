@@ -3,7 +3,10 @@ import re
 from typing import Dict
 
 import numpy as np
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 import config
 
@@ -77,7 +80,7 @@ def bin_difficulty(scores: pd.Series) -> pd.Series:
         return "hard"
 
     labels = scores.apply(_bin)
-    print(f"Difficulty bins: {labels.value_counts().to_dict()}")
+    logger.info(f"Difficulty bins: {labels.value_counts().to_dict()}")
     return labels
 
 
@@ -90,7 +93,7 @@ def generate_density_category(obstacle_density: float) -> str:
 
 
 def generate_all_labels(df_features: pd.DataFrame) -> pd.DataFrame:
-    print("=== PHASE 1B: Generating labels ===")
+    logger.info("=== PHASE 1B: Generating labels ===")
     df = df_features.copy()
 
     df["label_map_type"] = df["map_name"].apply(generate_map_type_label)
@@ -109,28 +112,28 @@ def generate_all_labels(df_features: pd.DataFrame) -> pd.DataFrame:
     map_type_counts = df["label_map_type"].value_counts().to_dict()
     difficulty_counts = df["label_difficulty"].value_counts().to_dict()
     density_counts = df["label_density_category"].value_counts().to_dict()
-    print("=== Label Distribution Summary ===")
-    print(f"Map type: {map_type_counts}")
-    print(f"Difficulty: {difficulty_counts}")
-    print(f"Density category: {density_counts}")
+    logger.info("=== Label Distribution Summary ===")
+    logger.info(f"Map type: {map_type_counts}")
+    logger.info(f"Difficulty: {difficulty_counts}")
+    logger.info(f"Density category: {density_counts}")
 
     random_subset = df[df["label_map_type"] == "random"].copy()
     if random_subset["known_obstacle_pct"].notnull().any():
         corr = random_subset[["known_obstacle_pct", "obstacle_density"]].corr().iloc[0, 1]
-        print(f"[CHECK] Random map obstacle correlation: r={corr:.3f}")
+        logger.info(f"[CHECK] Random map obstacle correlation: r={corr:.3f}")
 
     output_path = config.PROCESSED_DATA_DIR / "labeled_dataset.csv"
     try:
         df.to_csv(output_path, index=False)
-        print(f"[OK] Saved labeled dataset to {output_path}")
+        logger.info(f"Saved labeled dataset to {output_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save labeled dataset: {exc}")
+        logger.warning(f"Failed to save labeled dataset: {exc}")
 
     return df
 
 
 def validate_labels(df_labeled: pd.DataFrame) -> None:
-    print("=== PHASE 1B: Validating labels ===")
+    logger.info("=== PHASE 1B: Validating labels ===")
     lines = []
 
     def _check(condition: pd.Series, label: str) -> str:
@@ -193,12 +196,12 @@ def validate_labels(df_labeled: pd.DataFrame) -> None:
         lines.append("[WARNING] Random density correlation not computed")
 
     for line in lines:
-        print(line)
+        logger.info(line)
 
     report_path = config.REPORTS_DIR / "label_validation.txt"
     try:
         with report_path.open("w", encoding="utf-8") as file_obj:
             file_obj.write("\n".join(lines))
-        print(f"[OK] Saved validation report to {report_path}")
+        logger.info(f"Saved validation report to {report_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to write validation report: {exc}")
+        logger.warning(f"Failed to write validation report: {exc}")

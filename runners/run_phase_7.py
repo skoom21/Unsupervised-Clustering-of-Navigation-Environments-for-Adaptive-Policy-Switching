@@ -1,14 +1,23 @@
+import sys
+from pathlib import Path
+root_path = str(Path(__file__).resolve().parent.parent)
+if root_path not in sys.path:
+    sys.path.append(root_path)
+
 from pathlib import Path
 
 import numpy as np
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 import joblib
 
 import config
 from src.preprocessing import prepare_numeric_features, handle_missing_values
 from src.data_loader import parse_map_file
 from src.policy_switcher import AdaptivePolicySwitcher, visualize_policy_path, benchmark_adaptive_vs_single
-from src.rl_agent import QAgent, downsample_grid
+from src.rl_agent import QAgent, downsample_grid, _train_cluster_worker
 
 np.random.seed(42)
 
@@ -24,7 +33,7 @@ def _ensure_output_dirs() -> None:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"[WARNING] Failed to create directory {path}: {exc}")
+            logger.warning(f"Failed to create directory {path}: {exc}")
 
 
 def _load_labeled_dataset() -> pd.DataFrame:
@@ -34,7 +43,7 @@ def _load_labeled_dataset() -> pd.DataFrame:
     try:
         return pd.read_csv(labeled_path)
     except Exception as exc:
-        print(f"[ERROR] Failed to read labeled dataset: {exc}")
+        logger.error(f"Failed to read labeled dataset: {exc}")
         raise
 
 
@@ -44,7 +53,7 @@ def _load_model(path: Path, label: str):
     try:
         return joblib.load(path)
     except Exception as exc:
-        print(f"[ERROR] Failed to load {label}: {exc}")
+        logger.error(f"Failed to load {label}: {exc}")
         raise
 
 
@@ -56,7 +65,7 @@ def _load_training_maps() -> set[str]:
         df = pd.read_csv(report_path)
         return set(df["map_name"].dropna().tolist())
     except Exception as exc:
-        print(f"[WARNING] Failed to read RL cluster metrics: {exc}")
+        logger.warning(f"Failed to read RL cluster metrics: {exc}")
         return set()
 
 
@@ -64,71 +73,85 @@ def _load_cluster_agents(cluster_labels: np.ndarray) -> dict:
     agents = {}
     for cluster_id in sorted(np.unique(cluster_labels)):
         q_path = config.MODELS_DIR / f"qtable_cluster_{cluster_id}.npy"
-        if not q_path.exists():
-            print(f"[WARNING] Missing Q-table for cluster {cluster_id}: {q_path}")
+        goal_path = config.MODELS_DIR / f"canonical_goal_cluster_{cluster_id}.npy"
+        if not q_path.exists() or not goal_path.exists():
+            logger.warning(f"Missing Q-table or goal for cluster {cluster_id}")
             continue
         try:
             q_table = np.load(q_path)
             agent = QAgent(q_table.shape[:2])
             agent.Q = q_table
             agent.epsilon = 0.0
+            agent.canonical_goal = tuple(np.load(goal_path).tolist())
             agents[int(cluster_id)] = agent
         except Exception as exc:
-            print(f"[WARNING] Failed to load Q-table for cluster {cluster_id}: {exc}")
+            logger.warning(f"Failed to load Q-table for cluster {cluster_id}: {exc}")
             continue
     return agents
 
 
-def _select_single_agent(cluster_labels: np.ndarray, agents: dict) -> QAgent:
-    unique, counts = np.unique(cluster_labels, return_counts=True)
-    order = [cid for _, cid in sorted(zip(counts, unique), reverse=True)]
-    for cluster_id in order:
-        agent = agents.get(int(cluster_id))
-        if agent is not None:
-            print(f"[INFO] Using cluster {cluster_id} as single-agent baseline")
-            return agent
-    raise ValueError("No available agents for single-agent baseline")
+def _train_single_baseline_agent(df_labeled, X_pca, data_dir, config) -> QAgent:
+    """Train one agent on the map closest to the global centroid."""
+    global_centroid = X_pca.mean(axis=0)
+    distances = np.linalg.norm(X_pca - global_centroid, axis=1)
+    closest_idx = np.argmin(distances)
+    baseline_map = df_labeled.iloc[closest_idx]["map_name"]
+    logger.info(f"Baseline agent training on: {baseline_map} (closest to global centroid)")
+    
+    # Train using same procedure as cluster agents
+    map_features = df_labeled.iloc[closest_idx].to_dict()
+    map_path = list(Path(data_dir).rglob(baseline_map))
+    if not map_path:
+        raise FileNotFoundError(f"Could not find baseline map: {baseline_map}")
+        
+    task = {
+        "cluster_id": -1,
+        "map_name": baseline_map,
+        "map_path": str(map_path[0]),
+        "map_type": str(map_features.get("label_map_type", "unknown")),
+        "map_features": map_features
+    }
+    
+    result = _train_cluster_worker(task)
+    if result.get("status") != "ok":
+        raise RuntimeError("Failed to train baseline agent")
+        
+    q_path = Path(result["qtable_path"])
+    q_table = np.load(q_path)
+    agent = QAgent(q_table.shape[:2])
+    agent.Q = q_table
+    agent.epsilon = 0.0
+    agent.canonical_goal = tuple(np.load(result["goal_path"]).tolist())
+    return agent
 
 
-def _select_test_maps(
-    df_labeled: pd.DataFrame,
-    exclude: set[str],
-    n_total: int = 10,
-    per_type: int = 2,
-) -> list[str]:
-    rng = np.random.default_rng(config.RANDOM_STATE)
-    selected: list[str] = []
+TRAINING_MAPS = {
+    "Shanghai_2_512.map",
+    "Moscow_1_1024.map", 
+    "maze512-8-9.map",
+    "random512-35-6.map"
+}
 
-    for map_type in config.MAP_TYPE_CLASSES:
+def _select_test_maps(df_labeled, n_per_type=2):
+    """Select 2 unseen maps per type for benchmarking."""
+    test_maps = []
+    for map_type in ["maze", "room", "random", "street"]:
         candidates = df_labeled[
-            (df_labeled["label_map_type"] == map_type)
-            & (~df_labeled["map_name"].isin(exclude))
-        ]["map_name"].tolist()
-        if not candidates:
-            continue
-        count = min(per_type, len(candidates))
-        picks = rng.choice(candidates, size=count, replace=False).tolist()
-        selected.extend(picks)
-
-    if len(selected) >= n_total:
-        return selected[:n_total]
-
-    remaining_pool = df_labeled[
-        (~df_labeled["map_name"].isin(exclude))
-        & (~df_labeled["map_name"].isin(selected))
-    ]["map_name"].tolist()
-    if remaining_pool:
-        extra_count = min(n_total - len(selected), len(remaining_pool))
-        extra = rng.choice(remaining_pool, size=extra_count, replace=False).tolist()
-        selected.extend(extra)
-
-    return selected
+            (df_labeled["label_map_type"] == map_type) &
+            (~df_labeled["map_name"].isin(TRAINING_MAPS)) &
+            (df_labeled["corridor_width"] != 1) &
+            (df_labeled["free_ratio"] > 0.3)
+        ]
+        selected = candidates.sample(n=min(n_per_type, len(candidates)), 
+                                     random_state=42)
+        test_maps.extend(selected["map_name"].tolist())
+    return test_maps
 
 
 def run_phase_7() -> None:
-    print("\n" + "=" * 60)
-    print("PHASE 7: Adaptive Policy Switching")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("PHASE 7: Adaptive Policy Switching")
+    logger.info("=" * 60)
 
     _ensure_output_dirs()
     df_labeled = _load_labeled_dataset()
@@ -143,13 +166,13 @@ def run_phase_7() -> None:
         X_scaled = scaler.transform(X_clean)
         X_pca = pca.transform(X_scaled)
     except Exception as exc:
-        print(f"[ERROR] Failed to transform features: {exc}")
+        logger.error(f"Failed to transform features: {exc}")
         raise
 
     try:
         cluster_labels = kmeans.predict(X_pca)
     except Exception as exc:
-        print(f"[ERROR] Failed to predict clusters: {exc}")
+        logger.error(f"Failed to predict clusters: {exc}")
         raise
 
     cluster_agents = _load_cluster_agents(cluster_labels)
@@ -159,10 +182,9 @@ def run_phase_7() -> None:
     feature_columns = X_numeric.columns.tolist()
     switcher = AdaptivePolicySwitcher(kmeans, scaler, pca, cluster_agents, feature_columns)
 
-    single_agent = _select_single_agent(cluster_labels, cluster_agents)
-    training_maps = _load_training_maps()
-    test_map_names = _select_test_maps(df_labeled, training_maps, n_total=10, per_type=2)
-    print(f"[INFO] Phase 7 test maps: {test_map_names}")
+    single_agent = _train_single_baseline_agent(df_labeled, X_pca, config.RAW_DATA_DIR, config)
+    test_map_names = _select_test_maps(df_labeled, n_per_type=2)
+    logger.info(f"Phase 7 test maps: {test_map_names}")
 
     for map_name in test_map_names:
         map_path = config.RAW_DATA_DIR / map_name
@@ -172,13 +194,13 @@ def run_phase_7() -> None:
                 map_path = candidate
                 break
         if map_path is None:
-            print(f"[WARNING] Map not found on disk: {map_name}")
+            logger.warning(f"Map not found on disk: {map_name}")
             continue
 
         try:
             grid = parse_map_file(map_path)
         except Exception as exc:
-            print(f"[WARNING] Failed to parse {map_name}: {exc}")
+            logger.warning(f"Failed to parse {map_name}: {exc}")
             continue
 
         result = switcher.run_episode(grid, map_name, max_steps=config.RL_MAX_STEPS)
@@ -194,14 +216,14 @@ def run_phase_7() -> None:
         n_episodes=50,
     )
 
-    print("[OK] Phase 7 adaptive switching complete")
+    logger.info("Phase 7 adaptive switching complete")
 
 
 def main() -> None:
     try:
         run_phase_7()
     except Exception as exc:
-        print(f"[ERROR] Phase 7 failed: {exc}")
+        logger.error(f"Phase 7 failed: {exc}")
 
 
 if __name__ == "__main__":

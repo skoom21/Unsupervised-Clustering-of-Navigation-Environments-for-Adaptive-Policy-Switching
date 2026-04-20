@@ -1,7 +1,16 @@
+import sys
+from pathlib import Path
+root_path = str(Path(__file__).resolve().parent.parent)
+if root_path not in sys.path:
+    sys.path.append(root_path)
+
 from pathlib import Path
 
 import numpy as np
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import joblib
@@ -18,7 +27,7 @@ def _ensure_output_dirs() -> None:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"[WARNING] Failed to create directory {path}: {exc}")
+            logger.warning(f"Failed to create directory {path}: {exc}")
 
 
 def _load_labeled_dataset() -> pd.DataFrame:
@@ -28,7 +37,7 @@ def _load_labeled_dataset() -> pd.DataFrame:
     try:
         return pd.read_csv(labeled_path)
     except Exception as exc:
-        print(f"[ERROR] Failed to read labeled dataset: {exc}")
+        logger.error(f"Failed to read labeled dataset: {exc}")
         raise
 
 
@@ -40,10 +49,10 @@ def _load_or_compute_path_lengths(df_labeled: pd.DataFrame) -> pd.Series:
             if "map_name" in df_paths.columns and "avg_path_length" in df_paths.columns:
                 series = df_paths.set_index("map_name")["avg_path_length"]
                 series.name = "avg_path_length"
-                print(f"[OK] Loaded path lengths from {path_file}")
+                logger.info(f"Loaded path lengths from {path_file}")
                 return series
         except Exception as exc:
-            print(f"[WARNING] Failed to read path lengths: {exc}")
+            logger.warning(f"Failed to read path lengths: {exc}")
 
     return compute_path_lengths(config.RAW_DATA_DIR, df_labeled, n_samples=config.BFS_SAMPLES)
 
@@ -52,15 +61,15 @@ def _save_phase5_scaler(scaler: StandardScaler) -> None:
     scaler_path = config.MODELS_DIR / "scaler_phase5.pkl"
     try:
         joblib.dump(scaler, scaler_path)
-        print(f"[OK] Saved Phase 5 scaler to {scaler_path}")
+        logger.info(f"Saved Phase 5 scaler to {scaler_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save Phase 5 scaler: {exc}")
+        logger.warning(f"Failed to save Phase 5 scaler: {exc}")
 
 
 def run_phase_5() -> None:
-    print("\n" + "=" * 60)
-    print("PHASE 5: Regression (BFS)")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("PHASE 5: Regression (BFS)")
+    logger.info("=" * 60)
 
     _ensure_output_dirs()
     df_labeled = _load_labeled_dataset()
@@ -111,18 +120,18 @@ def run_phase_5() -> None:
     report_path = config.REPORTS_DIR / "regression_avg_path_length_metrics.csv"
     try:
         metrics_df.to_csv(report_path)
-        print(f"[OK] Saved regression metrics to {report_path}")
+        logger.info(f"Saved regression metrics to {report_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save regression metrics: {exc}")
+        logger.warning(f"Failed to save regression metrics: {exc}")
 
-    print("[OK] Phase 5 regression complete")
+    logger.info("Phase 5 regression complete")
 
 
 def main() -> None:
     try:
         run_phase_5()
     except Exception as exc:
-        print(f"[ERROR] Phase 5 failed: {exc}")
+        logger.error(f"Phase 5 failed: {exc}")
 
 
 if __name__ == "__main__":

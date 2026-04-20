@@ -3,7 +3,10 @@ import gc
 from typing import Dict, List
 
 import numpy as np
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 from scipy import stats, ndimage
 import matplotlib.pyplot as plt
 
@@ -147,7 +150,7 @@ def _infer_map_type(map_name: str) -> str:
 
 
 def load_all_maps(data_dir: Path) -> pd.DataFrame:
-    print("=== PHASE 1A: Loading maps and extracting features ===")
+    logger.info("=== PHASE 1A: Loading maps and extracting features ===")
     data_dir = Path(data_dir)
     if not data_dir.exists():
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
@@ -171,31 +174,31 @@ def load_all_maps(data_dir: Path) -> pd.DataFrame:
                 del grid
                 gc.collect()
         except (OSError, ValueError) as exc:
-            print(f"[WARNING] Skipping {map_path.name}: {exc}")
+            logger.warning(f"Skipping {map_path.name}: {exc}")
             skipped.append(map_path.name)
 
     df = pd.DataFrame(features)
-    print(f"Loaded maps: {len(df)}")
-    print(f"Counts by type: {counts}")
-    print(f"Data shape: {df.shape}")
-    print(f"Data types:\n{df.dtypes}")
-    print(f"Null counts:\n{df.isnull().sum()}")
+    logger.info(f"Loaded maps: {len(df)}")
+    logger.info(f"Counts by type: {counts}")
+    logger.info(f"Data shape: {df.shape}")
+    logger.info(f"Data types:\n{df.dtypes}")
+    logger.info(f"Null counts:\n{df.isnull().sum()}")
 
     if skipped:
         report_path = config.REPORTS_DIR / "skipped_maps.txt"
         try:
             with report_path.open("w", encoding="utf-8") as file_obj:
                 file_obj.write("\n".join(skipped))
-            print(f"[OK] Skipped maps logged to {report_path}")
+            logger.info(f"Skipped maps logged to {report_path}")
         except OSError as exc:
-            print(f"[WARNING] Failed to write skipped map report: {exc}")
+            logger.warning(f"Failed to write skipped map report: {exc}")
 
     output_path = config.PROCESSED_DATA_DIR / "raw_features.csv"
     try:
         df.to_csv(output_path, index=False)
-        print(f"[OK] Saved features to {output_path}")
+        logger.info(f"Saved features to {output_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save features: {exc}")
+        logger.warning(f"Failed to save features: {exc}")
 
     return df
 
@@ -218,12 +221,12 @@ def _resolve_type_dirs(data_dir: Path) -> Dict[str, Path]:
 
 
 def visualize_sample_maps(data_dir: Path, n_per_type: int = 3) -> None:
-    print("=== PHASE 1A: Visualizing sample maps ===")
+    logger.info("=== PHASE 1A: Visualizing sample maps ===")
     data_dir = Path(data_dir)
     type_dirs = _resolve_type_dirs(data_dir)
 
     if len(type_dirs) < 4:
-        print(f"[WARNING] Missing some map type folders in {data_dir}")
+        logger.warning(f"Missing some map type folders in {data_dir}")
 
     fig, axes = plt.subplots(4, n_per_type, figsize=(n_per_type * 3, 12))
     for row, map_type in enumerate(["maze", "room", "random", "street"]):
@@ -247,8 +250,8 @@ def visualize_sample_maps(data_dir: Path, n_per_type: int = 3) -> None:
     output_path = config.FIGURES_DIR / "sample_maps_by_type.png"
     try:
         fig.savefig(output_path, dpi=200)
-        print(f"[OK] Saved sample map figure to {output_path}")
+        logger.info(f"Saved sample map figure to {output_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save sample map figure: {exc}")
+        logger.warning(f"Failed to save sample map figure: {exc}")
     finally:
         plt.close(fig)

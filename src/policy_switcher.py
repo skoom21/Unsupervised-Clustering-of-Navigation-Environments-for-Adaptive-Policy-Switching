@@ -2,13 +2,16 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 import matplotlib.pyplot as plt
 
 import config
 from src.data_loader import extract_features, parse_map_file
 from src.label_generator import extract_encoded_metadata
-from src.rl_agent import GridEnvironment, QAgent, downsample_grid
+from src.rl_agent import GridEnvironment, QAgent, downsample_grid_adaptive, find_canonical_goal
 
 np.random.seed(42)
 
@@ -50,7 +53,7 @@ class AdaptivePolicySwitcher:
         X_scaled = self.scaler.transform(features_df)
         X_pca = self.pca.transform(X_scaled)
         cluster_id = int(self.kmeans.predict(X_pca)[0])
-        print(f"[Switcher] Map assigned to Cluster {cluster_id}")
+        logger.info(f"[Switcher] Map assigned to Cluster {cluster_id}")
         return cluster_id
 
     def get_policy(self, grid: np.ndarray, map_name: str = "query_map") -> QAgent:
@@ -66,8 +69,20 @@ class AdaptivePolicySwitcher:
         if agent is None:
             raise ValueError(f"No agent available for cluster {cluster_id}")
 
-        eval_grid = downsample_grid(grid, getattr(config, "RL_MAX_GRID_DIM", None))
-        env = GridEnvironment(eval_grid, max_steps=max_steps)
+        metadata = extract_encoded_metadata(map_name)
+        if metadata.get("corridor_width") is None:
+            metadata["corridor_width"] = 0
+        if metadata.get("num_rooms") is None:
+            metadata["num_rooms"] = 0
+
+        eval_grid = downsample_grid_adaptive(grid, metadata)
+        free_cells = [(r, c) for r in range(eval_grid.shape[0]) 
+                            for c in range(eval_grid.shape[1]) if eval_grid[r, c] == 0]
+        if not free_cells:
+            return {"success": False, "total_reward": -500, "steps": max_steps, "path": [], "cluster_id": cluster_id, "error": "no_free_cells"}
+            
+        inference_goal = find_canonical_goal(free_cells, eval_grid.shape)
+        env = GridEnvironment(eval_grid, max_steps=max_steps, canonical_goal=inference_goal)
         state = env.reset()
         path = [state]
         total_reward = 0.0
@@ -90,7 +105,7 @@ class AdaptivePolicySwitcher:
 def visualize_policy_path(grid: np.ndarray, result_dict: Dict[str, object], map_name: str) -> None:
     path = result_dict.get("path", [])
     if not path:
-        print(f"[WARNING] No path to visualize for {map_name}")
+        logger.warning(f"No path to visualize for {map_name}")
         return
 
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -115,9 +130,9 @@ def visualize_policy_path(grid: np.ndarray, result_dict: Dict[str, object], map_
     fig_path = config.FIGURES_DIR / f"policy_path_{safe_name}.png"
     try:
         fig.savefig(fig_path, dpi=200)
-        print(f"[OK] Saved policy path to {fig_path}")
+        logger.info(f"Saved policy path to {fig_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save policy path: {exc}")
+        logger.warning(f"Failed to save policy path: {exc}")
     finally:
         plt.close(fig)
 
@@ -169,20 +184,33 @@ def benchmark_adaptive_vs_single(
 
         map_path = map_paths.get(map_name)
         if map_path is None:
-            print(f"[WARNING] Map not found on disk: {map_name}")
+            logger.warning(f"Map not found on disk: {map_name}")
             continue
 
         try:
             grid = parse_map_file(map_path)
         except Exception as exc:
-            print(f"[WARNING] Failed to parse {map_name}: {exc}")
+            logger.warning(f"Failed to parse {map_name}: {exc}")
             continue
 
-        eval_grid = downsample_grid(grid, getattr(config, "RL_MAX_GRID_DIM", None))
+        map_metadata = map_row.iloc[0].to_dict()
+        if pd.isna(map_metadata.get("corridor_width")):
+            map_metadata["corridor_width"] = 0
+        if pd.isna(map_metadata.get("num_rooms")):
+            map_metadata["num_rooms"] = 0
+
+        eval_grid = downsample_grid_adaptive(grid, map_metadata)
+        free_cells = [(r, c) for r in range(eval_grid.shape[0]) 
+                            for c in range(eval_grid.shape[1]) if eval_grid[r, c] == 0]
+        if not free_cells:
+            logger.warning(f"No free cells in downsampled grid for {map_name}")
+            continue
+            
+        inference_goal = find_canonical_goal(free_cells, eval_grid.shape)
         adaptive_agent = switcher.get_policy(grid, map_name)
 
-        adaptive_env = GridEnvironment(eval_grid, max_steps=config.RL_MAX_STEPS)
-        single_env = GridEnvironment(eval_grid, max_steps=config.RL_MAX_STEPS)
+        adaptive_env = GridEnvironment(eval_grid, max_steps=config.RL_MAX_STEPS, canonical_goal=inference_goal)
+        single_env = GridEnvironment(eval_grid, max_steps=config.RL_MAX_STEPS, canonical_goal=inference_goal)
 
         adaptive_metrics = _run_agent_episodes(adaptive_env, adaptive_agent, n_episodes)
         single_metrics = _run_agent_episodes(single_env, single_agent, n_episodes)
@@ -204,8 +232,8 @@ def benchmark_adaptive_vs_single(
     report_path = config.REPORTS_DIR / "adaptive_vs_single.csv"
     try:
         df_results.to_csv(report_path, index=False)
-        print(f"[OK] Saved adaptive vs single report to {report_path}")
+        logger.info(f"Saved adaptive vs single report to {report_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save adaptive vs single report: {exc}")
+        logger.warning(f"Failed to save adaptive vs single report: {exc}")
 
     return df_results

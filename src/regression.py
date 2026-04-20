@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures
@@ -18,12 +18,16 @@ from src.data_loader import parse_map_file
 np.random.seed(42)
 
 
-def bfs(grid: np.ndarray, start: tuple, goal: tuple) -> int:
+def bfs(grid: np.ndarray, start: tuple, goal: tuple, max_nodes: int = 10000) -> int:
     """Returns shortest path length or -1 if unreachable. 4-directional."""
     height, width = grid.shape
     queue = deque([(start, 0)])
     visited = {start}
+    visited_count = 0
     while queue:
+        if visited_count > max_nodes:
+            return -1
+            
         (row, col), dist = queue.popleft()
         if (row, col) == goal:
             return dist
@@ -32,6 +36,7 @@ def bfs(grid: np.ndarray, start: tuple, goal: tuple) -> int:
             if 0 <= nr < height and 0 <= nc < width and grid[nr][nc] == 0 and (nr, nc) not in visited:
                 visited.add((nr, nc))
                 queue.append(((nr, nc), dist + 1))
+        visited_count += 1
     return -1
 
 
@@ -146,7 +151,7 @@ def train_regression_models(X_train: np.ndarray, y_train: np.ndarray, target_nam
     poly = Pipeline(
         [
             ("poly", PolynomialFeatures(degree=2, include_bias=False)),
-            ("lr", LinearRegression()),
+            ("ridge", Ridge(alpha=10.0)),
         ]
     )
 

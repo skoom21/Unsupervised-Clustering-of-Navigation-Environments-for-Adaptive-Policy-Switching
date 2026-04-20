@@ -1,5 +1,14 @@
+import sys
+from pathlib import Path
+root_path = str(Path(__file__).resolve().parent.parent)
+if root_path not in sys.path:
+    sys.path.append(root_path)
+
 import numpy as np
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -32,7 +41,7 @@ def _ensure_output_dirs() -> None:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"[WARNING] Failed to create directory {path}: {exc}")
+            logger.warning(f"Failed to create directory {path}: {exc}")
 
 
 def _load_labeled_dataset() -> pd.DataFrame:
@@ -42,15 +51,15 @@ def _load_labeled_dataset() -> pd.DataFrame:
     try:
         return pd.read_csv(labeled_path)
     except Exception as exc:
-        print(f"[ERROR] Failed to read labeled dataset: {exc}")
+        logger.error(f"Failed to read labeled dataset: {exc}")
         raise
 
 
 def _select_feature_columns(df: pd.DataFrame) -> list:
     removed = [col for col in METADATA_FEATURES if col in df.columns]
     feature_cols = [col for col in df.columns if col not in removed]
-    print(f"[INFO] Excluding metadata features: {removed}")
-    print(f"[INFO] Using {len(feature_cols)} grid-derived features for classification")
+    logger.info(f"Excluding metadata features: {removed}")
+    logger.info(f"Using {len(feature_cols)} grid-derived features for classification")
     return feature_cols
 
 
@@ -58,25 +67,25 @@ def _save_phase4_scaler(scaler: StandardScaler) -> None:
     scaler_path = config.MODELS_DIR / "scaler_phase4.pkl"
     try:
         joblib.dump(scaler, scaler_path)
-        print(f"[OK] Saved Phase 4 scaler to {scaler_path}")
+        logger.info(f"Saved Phase 4 scaler to {scaler_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save Phase 4 scaler: {exc}")
+        logger.warning(f"Failed to save Phase 4 scaler: {exc}")
 
 
 def _check_map_name_duplicates(map_names: pd.Series) -> None:
     dup_count = map_names.duplicated().sum()
     if dup_count > 0:
-        print(f"[WARNING] Found {dup_count} duplicate map_name entries")
+        logger.warning(f"Found {dup_count} duplicate map_name entries")
     else:
-        print("[OK] No duplicate map_name entries found")
+        logger.info("No duplicate map_name entries found")
 
 
 def _check_train_test_overlap(names_train: pd.Series, names_test: pd.Series) -> None:
     overlap = set(names_train).intersection(set(names_test))
     if overlap:
-        print(f"[WARNING] Train/test overlap detected for {len(overlap)} map(s)")
+        logger.warning(f"Train/test overlap detected for {len(overlap)} map(s)")
     else:
-        print("[OK] No map_name overlap between train/test splits")
+        logger.info("No map_name overlap between train/test splits")
 
 
 def _permutation_sanity_check(X_train, y_train, X_test, y_test) -> None:
@@ -85,27 +94,27 @@ def _permutation_sanity_check(X_train, y_train, X_test, y_test) -> None:
     model = DecisionTreeClassifier(random_state=config.RANDOM_STATE)
     model.fit(X_train, y_perm)
     perm_acc = np.mean(model.predict(X_test) == np.array(y_test))
-    print(f"[SANITY] Permutation accuracy (should ~0.25): {perm_acc:.4f}")
+    logger.info(f"[SANITY] Permutation accuracy (should ~0.25): {perm_acc:.4f}")
 
 
 def _save_feature_importances(model, feature_columns: list) -> None:
     importances = pd.Series(model.feature_importances_, index=feature_columns).sort_values(ascending=False)
     top = importances.head(10)
-    print("[INFO] Top feature importances (Decision Tree):")
+    logger.info("Top feature importances (Decision Tree):")
     for name, value in top.items():
-        print(f"  {name}: {value:.4f}")
+        logger.info(f"  {name}: {value:.4f}")
     report_path = config.REPORTS_DIR / "map_type_feature_importances.csv"
     try:
         importances.to_csv(report_path, header=["importance"])
-        print(f"[OK] Saved feature importances to {report_path}")
+        logger.info(f"Saved feature importances to {report_path}")
     except OSError as exc:
-        print(f"[WARNING] Failed to save feature importances: {exc}")
+        logger.warning(f"Failed to save feature importances: {exc}")
 
 
 def run_phase_4() -> None:
-    print("\n" + "=" * 60)
-    print("PHASE 4: Classification")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("PHASE 4: Classification")
+    logger.info("=" * 60)
 
     _ensure_output_dirs()
     df_labeled = _load_labeled_dataset()
@@ -128,7 +137,7 @@ def run_phase_4() -> None:
 
     primary_task = "label_map_type"
     if primary_task not in splits:
-        print(f"[WARNING] Primary task {primary_task} not found. Skipping.")
+        logger.warning(f"Primary task {primary_task} not found. Skipping.")
     else:
         X_train, X_test, y_train, y_test, names_train, names_test = train_test_split(
             X_scaled,
@@ -164,7 +173,7 @@ def run_phase_4() -> None:
     secondary_tasks = ["label_difficulty", "label_density_category"]
     for task in secondary_tasks:
         if task not in splits:
-            print(f"[WARNING] Secondary task {task} not found. Skipping.")
+            logger.warning(f"Secondary task {task} not found. Skipping.")
             continue
 
         X_train, X_test, y_train, y_test = splits[task]
@@ -182,14 +191,14 @@ def run_phase_4() -> None:
 
         save_task_metrics(task_results, f"classification_{task_short}_metrics.csv")
 
-    print("[OK] Phase 4 classification complete")
+    logger.info("Phase 4 classification complete")
 
 
 def main() -> None:
     try:
         run_phase_4()
     except Exception as exc:
-        print(f"[ERROR] Phase 4 failed: {exc}")
+        logger.error(f"Phase 4 failed: {exc}")
 
 
 if __name__ == "__main__":
