@@ -1,5 +1,8 @@
 # Unsupervised Clustering of Navigation Environments for Adaptive Policy Switching
 
+## Final Project Report (PDF)
+- [Unsupervised-Clustering-of-Navigation-Environments-for-Adaptive-Policy-Switching.pdf](Unsupervised-Clustering-of-Navigation-Environments-for-Adaptive-Policy-Switching.pdf)
+
 ## Project Complete Delivery
 
 This repository contains an end-to-end Machine Learning pipeline developed to extract, standardize, classify, cluster, and ultimately reinforcement-learn zero-shot optimal policies applied across geographically generated octile grid maps (mazes, randomly generated fields, constructed interior rooms, and macro-streets environments).
